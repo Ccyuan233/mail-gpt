@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+*.py[cod]
+data/
+*.db*
+*.log
+codex-*.html
+codex-config-schema.json
+
+# Authentication files must remain local even if moved outside data/.
+auth.json
+*.pem
+*.p12
