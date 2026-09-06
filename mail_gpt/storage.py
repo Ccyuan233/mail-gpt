@@ -5,6 +5,7 @@ import os
 import sqlite3
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 
 
 @contextmanager
@@ -59,10 +60,44 @@ class Store:
                 state TEXT NOT NULL, reply_id TEXT NOT NULL, reply BLOB,
                 error_id TEXT, created_at REAL NOT NULL, updated_at REAL NOT NULL,
                 PRIMARY KEY(account, message_id));
+            CREATE TABLE IF NOT EXISTS settings (
+                account TEXT NOT NULL, name TEXT NOT NULL, value TEXT NOT NULL,
+                PRIMARY KEY(account, name));
         """)
 
     def close(self):
         self.db.close()
+
+    def scan_start(self, account, override=""):
+        saved = self.db.execute("SELECT value FROM settings WHERE account=? AND name='scan_start'", (account,)).fetchone()
+        earliest = self.db.execute("SELECT MIN(created_at) FROM messages WHERE account=?", (account,)).fetchone()[0]
+        value = override or (saved[0] if saved else (
+            datetime.fromtimestamp(earliest if earliest is not None else time.time(), timezone.utc)
+            - timedelta(days=1)).date().isoformat())
+        with self.db:
+            self.db.execute("INSERT INTO settings VALUES (?,'scan_start',?) ON CONFLICT(account,name) DO UPDATE SET value=excluded.value", (account, value))
+        return value
+
+    def backfill_gmail_aliases(self, account, mails):
+        """Reconnect pre-fix sessions without changing any existing Gmail mapping.
+
+        Legacy duplicate Gmail conversations use their most recently answered session.
+        Historical RFC aliases and the older session files remain intact.
+        """
+        latest = {}
+        for mail in mails:
+            if not mail.gmail_thread:
+                continue
+            row = self.message(account, mail.message_id)
+            if not row or row["sender"] != mail.sender or row["state"] != "sent":
+                continue
+            key = (mail.sender, "gmail:" + mail.gmail_thread)
+            if key not in latest or row["created_at"] > latest[key]["created_at"]:
+                latest[key] = row
+        with self.db:
+            for (sender, alias), row in latest.items():
+                self.db.execute("INSERT OR IGNORE INTO thread_aliases VALUES (?,?,?,?)",
+                                (account, sender, alias, row["thread_key"]))
 
     def recover(self):
         # Caller holds the process lock: these effects belong to a stopped previous run.

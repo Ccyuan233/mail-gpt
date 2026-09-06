@@ -45,6 +45,8 @@ class Service:
                 return "ignored"
             if row["state"] == "ready":
                 return self.deliver(row)
+            if row["state"] == "sent":
+                return "already-sent"
             if row["state"] != "pending":
                 return row["state"]
         elif db.count_recent(c.email) >= c.max_requests_per_hour:

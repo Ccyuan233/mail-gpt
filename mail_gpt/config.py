@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 from pathlib import Path
+from datetime import date
 import os
 import re
 
@@ -53,6 +54,7 @@ class Config:
     codex_timeout: int = 240
     model: str = ""
     expected_version: str = "0.153.4"
+    imap_start_date: str = ""
 
     @classmethod
     def load(cls, path: Path, *, require_mail: bool = True):
@@ -83,6 +85,9 @@ class Config:
         dmarc = get("REQUIRE_DMARC", "true").lower()
         if dmarc not in {"true", "false"}:
             raise ValueError("REQUIRE_DMARC must be true or false")
+        start_date = get("IMAP_START_DATE")
+        if start_date:
+            date.fromisoformat(start_date)
         return cls(email=email, password=password, allowed=allowed,
                    database=loc("DATABASE_PATH", "./data/conversations.db"),
                    codex_home=loc("BOT_CODEX_HOME", "./data/codex-home"),
@@ -95,4 +100,5 @@ class Config:
                    max_requests_per_hour=num("MAX_REQUESTS_PER_HOUR", 30),
                    require_dmarc=dmarc == "true", auth_serv_id=get("AUTH_SERV_ID", "mx.google.com"),
                    codex_path=get("CODEX_PATH", "codex"), codex_timeout=num("CODEX_TIMEOUT", 240),
-                   model=get("CODEX_MODEL"), expected_version=get("CODEX_EXPECTED_VERSION", "0.153.4"))
+                   model=get("CODEX_MODEL"), expected_version=get("CODEX_EXPECTED_VERSION", "0.153.4"),
+                   imap_start_date=start_date)

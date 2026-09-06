@@ -1,5 +1,6 @@
 """Provider boundary, MIME parsing, safe reply construction, IMAP and SMTP."""
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone, date
 from email import policy
 from email.parser import BytesParser
 from email.message import EmailMessage
@@ -19,11 +20,11 @@ def message_ids(value):
 
 
 def base_subject(subject):
-    return re.sub(r"^(?:(?:re|fw|fwd|回复|答复|转发)\s*:\s*)+", "", subject.strip(), flags=re.I)
+    return re.sub(r"^(?:(?:re|fw|fwd|回复|答复|转发)\s*[:：]\s*)+", "", subject.strip(), flags=re.I)
 
 
 def command(subject):
-    match = re.match(r"^\[GPT(?::(NEW))?\](?:\s|$)", base_subject(subject), re.I)
+    match = re.match(r"^\[GPT(?::(NEW))?\]", base_subject(subject), re.I)
     return ("new" if match.group(1) else "chat") if match else None
 
 
@@ -69,7 +70,7 @@ def strip_quotes(text, is_reply):
         if (re.match(r"^On .+wrote:\s*$", line.strip(), re.I)
                 or (line.lstrip().startswith("On ") and re.match(r"^On .+wrote:", joined, re.I))
                 or re.match(r"^在.+写道[：:]", line.strip())
-                or re.match(r"^-{2,}\s*(Original Message|原始邮件|原邮件)", line.strip(), re.I)
+                or re.match(r"^-{2,}\s*(Original(?: Message)?|原始邮件|原邮件)\s*-*\s*$", line.strip(), re.I)
                 or re.match(r"^(From|发件人)\s*[:：]", line.strip(), re.I)):
             break
         if not line.lstrip().startswith(">"):
@@ -145,7 +146,7 @@ def make_reply(mail: Incoming, sender: str, body: str, reply_id: str):
 
 
 class MailClient(Protocol):
-    def unread(self): ...
+    def candidates(self): ...
     def mark_seen(self, uid: str): ...
 
 
@@ -175,9 +176,10 @@ class SMTPClient:
 
 
 class IMAPClient:
-    def __init__(self, config):
+    def __init__(self, config, since=None):
         self.config = config
         self.client = None
+        self.since = since or config.imap_start_date or (datetime.now(timezone.utc) - timedelta(days=1)).date().isoformat()
 
     def __enter__(self):
         c = self.config
@@ -197,10 +199,15 @@ class IMAPClient:
             raise RuntimeError("IMAP operation failed")
         return data
 
-    def unread(self):
+    def candidates(self):
         client = self.client
-        gmail = b"X-GM-EXT-1" in client.capabilities
-        uids = self._ok(client.uid("search", None, 'UNSEEN SUBJECT "[GPT"'))[0].split()
+        capabilities = {v.decode("ascii").upper() if isinstance(v, bytes) else v.upper() for v in client.capabilities}
+        gmail = "X-GM-EXT-1" in capabilities
+        since = date.fromisoformat(self.since)
+        month = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")[since.month - 1]
+        # Seen is a UI flag, never an acknowledgement that the bot handled a message.
+        query = f'SINCE {since.day:02d}-{month}-{since.year} SUBJECT "[GPT"'
+        uids = self._ok(client.uid("search", None, query))[0].split()
         for uid in sorted(uids, key=int):
             meta = self._ok(client.uid("fetch", uid, "(RFC822.SIZE)"))
             size = re.search(rb"RFC822.SIZE (\d+)", b" ".join(x for x in meta if isinstance(x, bytes)))
@@ -218,6 +225,9 @@ class IMAPClient:
                         yield parse_message(raw, uid.decode(), match[1].decode() if match else None)
                     except (ValueError, TypeError, LookupError):
                         continue
+
+    # Compatibility with callers of the original MVP; now includes read messages too.
+    unread = candidates
 
     def mark_seen(self, uid):
         self._ok(self.client.uid("store", uid, "+FLAGS.SILENT", "(\\Seen)"))

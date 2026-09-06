@@ -3,7 +3,7 @@
 Python 3.11+ / Windows 优先 / SQLite / IMAP + SMTP / 官方 Codex CLI。
 模型后端使用 **ChatGPT 登录的 Codex CLI**，不需要 OpenAI API key。正常请求使用该账号的 Codex 额度；实际可用额度、模型和限流由账号决定，程序不承诺无限使用。
 
-第一版已实现收取未读邮件、发件人白名单、`[GPT]` / `[GPT:NEW]`、纯文本及 HTML 转文本、去引用、Gmail thread / RFC 回退、持久会话、去重、自动回复防循环、TLS 收发、错误脱敏及中断后的人工核对。没有 Web UI。
+第一版已实现核对已读和未读来信、发件人白名单、`[GPT]` / `[GPT:NEW]`、纯文本及 HTML 转文本、去引用、Gmail thread / RFC 回退、持久会话、去重、自动回复防循环、TLS 收发、错误脱敏及中断后的人工核对。没有 Web UI。
 
 ## 你需要两个邮箱
 
@@ -75,7 +75,7 @@ python -m venv .venv
 ## 3. 开始收发
 
 ```powershell
-# 首次建议只轮询一轮；这会处理符合条件的既有未读邮件并真实发送回答
+# 首次建议只轮询一轮；这会处理扫描起始日期后符合条件且尚未回复的邮件
 .\run.ps1 -Command run -Once
 
 # 持续运行，默认每 30 秒轮询一次；Ctrl+C 停止
@@ -98,7 +98,18 @@ Subject: [GPT] A-Level Physics
 
 `[GPT:NEW] 新话题` 强制新建会话。机器人的回复主题会归一为 `[GPT]`，所以之后直接 Reply 会续接新会话。Gmail 可能因为主题变化重新分组，程序仍通过 RFC 引用头找到同一内部会话。`[CODEX]`、`[GPT:SEARCH]` 等尚未支持的模式会被忽略。
 
-模型响应耗时之外最多加一轮轮询延迟；不能保证每封都在几十秒内收到。同一程序串行处理邮件以保持上下文顺序，默认每小时最多接受 30 封，超出的保持未读、等待后续轮询。你在程序读取前手动把问题标为已读，会使其被跳过。
+模型响应耗时之外最多加一轮轮询延迟；不能保证每封都在几十秒内收到。同一程序串行处理邮件以保持上下文顺序，默认每小时最多接受 30 封，超出的等待后续轮询。打开邮件、Gmail 自动标为已读或其他客户端修改已读状态，不会再导致漏处理；是否已经回信以数据库中的 Message-ID 记录为准。
+
+程序首次运行会把扫描起始日期写入 SQLite，默认从首次运行前一天开始；从旧版升级时按最早处理记录的前一天初始化。该日期不会随着重启或时间推移自动向后移动，因此离线期间的邮件仍可补处理。需要扫描更早的来信时，在 `.env` 设置 `IMAP_START_DATE=YYYY-MM-DD` 后重启。只扫描配置的收件文件夹，仍受正文大小、发件人认证和主题规则约束。`[GPT]测试` 与 `[GPT] 测试` 都有效。
+
+检查消息状况时使用以下命令，它会同时核对实际邮箱与只读数据库，并单独报告 `pending-not-recorded`（收到但还没进入处理记录）：
+
+```powershell
+.\run.ps1 -Command status
+# 或 python -m mail_gpt status
+```
+
+状态命令不发信、不修改已读状态、不恢复或修改工作中的请求。不要仅凭数据库中没有 `pending` 就判断不存在漏信。
 
 ## 默认安全策略及边界
 
@@ -114,6 +125,8 @@ Subject: [GPT] A-Level Physics
 ## 去重、异常及恢复
 
 Gmail `X-GM-THRID` 保留为字符串，避免 64 位 ID 精度丢失。会话按机器人账号、发件人隔离；Gmail ID 和收发双方的 RFC Message-ID 都登记别名。SQLite 用 `(account, message_id)` 唯一约束去重，并保存会话映射、待发送回答和稳定回复 Message-ID。
+
+旧版曾因 IMAP capability 的字符串/字节类型判断错误而未使用 Gmail ID。升级后会依据实际收件箱补齐缺失的 Gmail 别名；如果一个 Gmail thread 曾意外产生多个旧会话，选择其中最近回答过的会话作为后续会话，保留旧会话文件和 RFC 别名，不拼接或重写历史。
 
 处理流程：`pending → generating → ready → sending → sent`。
 
@@ -153,6 +166,7 @@ mail_gpt/
   security.py  白名单、收件地址、DMARC、自动回复防护
   codex.py     官方 CLI 适配器、stdin、JSONL、会话恢复
   storage.py   SQLite、会话别名、收发状态、实例锁
+  status.py    只读核对邮箱与数据库，识别尚未登记的来信
   service.py   串联流程，不依赖具体邮件服务
 tests/         离线单元及 subprocess 集成测试
 data/          运行数据，忽略于 Git
@@ -168,7 +182,7 @@ python -m unittest discover -v
 & "$env:USERPROFILE\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" -m unittest discover -v
 ```
 
-34 项离线测试使用临时数据库、模拟 IMAP/SMTP、模拟 CLI，以及独立 Python 子进程 fixture。覆盖 thread/session 持久化、RFC 引用回退、NEW、去重、白名单、DMARC、防循环、引用与附件、参数及环境隔离、错误脱敏、限流、SMTP 不确定投递和崩溃恢复；不登录、不联网、不发信。
+42 项离线测试使用临时数据库、模拟 IMAP/SMTP、模拟 CLI，以及独立 Python 子进程 fixture。覆盖 thread/session 持久化、RFC 引用回退、NEW、去重、白名单、DMARC、防循环、引用与附件、参数及环境隔离、错误脱敏、限流、SMTP 不确定投递和崩溃恢复；另外覆盖已读 QQ 回复补处理、无空格主题、真实 IMAP capability 类型、QQ 引用标记、扫描日期持久化、旧线程别名修复及状态对账。离线测试不登录、不联网、不发信。
 
 2026-09-06 的本机验证：Python 3.12.14；Codex CLI 0.153.4；已直接读取 `exec --help`、`exec resume --help` 与 feature list。已完成官方 ChatGPT 登录；真实新会话记住随机测试词，恢复相同会话后准确回答，`smoke` 通过。CLI 当前默认选用 `gpt-6-astra`，本次首轮约 116 秒，不保证几十秒内回信。Gmail IMAP 和 SMTP 的真实 TLS 登录均通过；后台监听已连接并完成首轮读取。随后已处理实际授权来信并获得 Gmail SMTP 发送成功确认；手机端 Reply 的完整闭环尚需进一步验证。
 

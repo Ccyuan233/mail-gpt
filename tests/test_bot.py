@@ -161,7 +161,7 @@ class BotTests(unittest.TestCase):
             self.assertEqual(rejection(mail, self.config), "authentication")
 
     def test_subject_commands_and_unsupported_modes(self):
-        for subj in ["[CODEX] delete", "hello [GPT]", "[GPT:SEARCH] hi", "[GPT]spoof"]:
+        for subj in ["[CODEX] delete", "hello [GPT]", "[GPT:SEARCH] hi", "[GPTX]spoof"]:
             self.assertEqual(self.service.process(incoming(subject=subj)), "ignored")
         self.assertEqual(command("Re: 回复: [GPT] hello"), "chat")
 
@@ -396,6 +396,93 @@ class BotTests(unittest.TestCase):
         self.assertLess(calls.index("starttls"), calls.index("login"))
         fake.sendmail.assert_called_once_with(self.config.email, ["me@sender.test"], b"raw")
         fake.close.assert_called_once()
+
+    def test_read_qq_reply_is_not_lost_before_poll(self):
+        from unittest.mock import Mock
+        self.service.process(incoming())
+        row = self.db.message(self.config.email, "<one@sender.test>")
+        reply = incoming("<follow@sender.test>", subject="Re: [GPT]", refs=[row["reply_id"]], body="Follow-up\n\n---Original---\nFrom: bot\nOld text")
+        fake = Mock()
+        fake.capabilities = ("IMAP4REV1", "X-GM-EXT-1")
+        def uid(*args):
+            if args[0] == "search":
+                # The real QQ replies have already become Seen in Gmail.
+                return "OK", [b"" if "UNSEEN" in str(args) else b"196"]
+            if args[-1] == "(RFC822.SIZE)":
+                return "OK", [b"196 (RFC822.SIZE 900)"]
+            return "OK", [(b"196 (X-GM-THRID 12345678901234567890)", reply.headers.as_bytes()), b")"]
+        fake.uid.side_effect = uid
+        mailbox = IMAPClient(self.config)
+        mailbox.client = fake
+        candidates = list(mailbox.unread())
+        self.assertEqual(len(candidates), 1, "Read QQ follow-up must still reach the worker")
+        self.assertEqual(self.service.process(candidates[0]), "sent")
+        self.assertEqual(self.backend.calls[-1][1], "Follow-up")
+        self.assertIsNotNone(self.backend.calls[-1][2])
+
+    def test_gmail_capabilities_use_stdlib_string_representation(self):
+        from unittest.mock import Mock
+        fake = Mock()
+        fake.capabilities = ("IMAP4REV1", "X-GM-EXT-1")
+        def uid(*args):
+            if args[0] == "search":
+                return "OK", [b"1"]
+            if args[-1] == "(RFC822.SIZE)":
+                return "OK", [b"1 (RFC822.SIZE 900)"]
+            self.assertIn("X-GM-THRID", args[-1])
+            return "OK", [(b"1 (X-GM-THRID 18446744073709551610)", incoming().headers.as_bytes()), b")"]
+        fake.uid.side_effect = uid
+        mailbox = IMAPClient(self.config)
+        mailbox.client = fake
+        self.assertEqual(list(mailbox.unread())[0].gmail_thread, "18446744073709551610")
+
+    def test_gpt_tag_needs_no_trailing_space(self):
+        self.assertEqual(command("[GPT]测试"), "chat")
+        self.assertEqual(command("回复：[GPT:NEW]新问题"), "new")
+
+    def test_qq_original_marker_removed_from_reply(self):
+        mail = incoming(refs=["<old@sender.test>"], body="Follow-up\n\n---Original---\nFrom: bot\nOld answer")
+        self.assertEqual(mail.body, "Follow-up")
+
+    def test_scan_start_persists_across_restarts(self):
+        with patch("mail_gpt.storage.time.time", return_value=1788707700):
+            first = self.db.scan_start(self.config.email)
+        with patch("mail_gpt.storage.time.time", return_value=1789907700):
+            self.assertEqual(self.db.scan_start(self.config.email), first)
+        self.assertEqual(self.db.scan_start(self.config.email, "2026-09-01"), "2026-09-01")
+
+    def test_legacy_gmail_mapping_keeps_latest_answered_session(self):
+        first = incoming(thread=None)
+        second = incoming("<two@sender.test>", thread=None)
+        self.service.process(first)
+        self.service.process(second)
+        newer = self.db.message(self.config.email, second.message_id)
+        first.gmail_thread = second.gmail_thread = "123"
+        self.db.backfill_gmail_aliases(self.config.email, [first, second])
+        self.assertEqual(self.db.resolve(self.config.email, incoming("<reply@sender.test>", thread="123")), newer["thread_key"])
+        self.db.backfill_gmail_aliases(self.config.email, [first])
+        self.assertEqual(self.db.resolve(self.config.email, incoming("<reply2@sender.test>", thread="123")), newer["thread_key"])
+
+    def test_status_reports_unrecorded_read_mail_without_writing(self):
+        from mail_gpt.status import inspect_status
+        from unittest.mock import MagicMock
+        self.service.process(incoming())
+        self.db.scan_start(self.config.email)
+        missing = incoming("<missing@sender.test>", subject="Re: [GPT]")
+        mailbox = MagicMock()
+        mailbox.__enter__.return_value = mailbox
+        mailbox.candidates.return_value = [incoming(), missing]
+        with patch("mail_gpt.status.IMAPClient"):
+            report = inspect_status(self.config, mailbox_factory=lambda *a, **kw: mailbox)
+        self.assertEqual(report["mailbox_counts"], {"sent": 1, "pending-not-recorded": 1})
+        self.assertIsNone(self.db.message(self.config.email, missing.message_id))
+        mailbox.mark_seen.assert_not_called()
+
+    def test_sent_candidate_is_not_counted_as_new_send(self):
+        mail = incoming()
+        self.assertEqual(self.service.process(mail), "sent")
+        self.assertEqual(self.service.process(mail), "already-sent")
+        self.assertEqual(len(self.smtp.sent), 1)
 
 
 if __name__ == "__main__":
