@@ -4,13 +4,15 @@ import time
 import uuid
 from .mail import command, make_reply
 from .security import rejection
+from .runtime import is_paused
 
 log = logging.getLogger("mail_gpt")
 
 
 class Service:
-    def __init__(self, config, store, backend, smtp):
+    def __init__(self, config, store, backend, smtp, health=None):
         self.config, self.store, self.backend, self.smtp = config, store, backend, smtp
+        self.health = health
 
     def deliver(self, row):
         c, db = self.config, self.store
@@ -18,6 +20,8 @@ class Service:
             db.state(c.email, row["message_id"], "review", "sender-no-longer-allowed")
             return "review"
         # Commit before sending: any interruption from this point is uncertain delivery.
+        if self.health:
+            self.health.beat("sending")
         db.state(c.email, row["message_id"], "sending", row["error_id"])
         try:
             self.smtp.send(row["sender"], bytes(row["reply"]))
@@ -31,6 +35,8 @@ class Service:
 
     def flush_outbox(self):
         for row in self.store.ready_messages(self.config.email):
+            if self.health and is_paused(self.config):
+                break
             self.deliver(row)
 
     def process(self, mail):
@@ -65,6 +71,8 @@ class Service:
         elif conv["blocked"] and mode != "new":
             answer = "The previous AI turn was interrupted. Send a new message with subject [GPT:NEW] to start fresh."
         else:
+            if self.health:
+                self.health.beat("generating")
             db.state(c.email, mail.message_id, "generating")
             try:
                 answer = self.backend.generate(mail.subject, mail.body,

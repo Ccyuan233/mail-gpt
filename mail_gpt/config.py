@@ -55,6 +55,11 @@ class Config:
     model: str = ""
     expected_version: str = "0.153.4"
     imap_start_date: str = ""
+    notify_email: str = ""
+
+    @property
+    def runtime(self):
+        return self.database.with_suffix(".runtime")
 
     @classmethod
     def load(cls, path: Path, *, require_mail: bool = True):
@@ -88,6 +93,11 @@ class Config:
         start_date = get("IMAP_START_DATE")
         if start_date:
             date.fromisoformat(start_date)
+        notify = get("NOTIFY_EMAIL")
+        if notify:
+            notify = address(notify)
+            if notify not in allowed or notify == email:
+                raise ValueError("NOTIFY_EMAIL must be an allowed sender, not the bot account")
         return cls(email=email, password=password, allowed=allowed,
                    database=loc("DATABASE_PATH", "./data/conversations.db"),
                    codex_home=loc("BOT_CODEX_HOME", "./data/codex-home"),
@@ -101,4 +111,4 @@ class Config:
                    require_dmarc=dmarc == "true", auth_serv_id=get("AUTH_SERV_ID", "mx.google.com"),
                    codex_path=get("CODEX_PATH", "codex"), codex_timeout=num("CODEX_TIMEOUT", 240),
                    model=get("CODEX_MODEL"), expected_version=get("CODEX_EXPECTED_VERSION", "0.153.4"),
-                   imap_start_date=start_date)
+                   imap_start_date=start_date, notify_email=notify)

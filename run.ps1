@@ -1,5 +1,5 @@
 param(
-    [ValidateSet('doctor', 'login', 'smoke', 'run', 'review', 'status')]
+    [ValidateSet('doctor', 'login', 'smoke', 'run', 'review', 'status', 'supervise', 'pause', 'resume', 'health', 'notify-test')]
     [string]$Command = 'doctor',
     [switch]$Offline,
     [switch]$Once

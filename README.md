@@ -84,7 +84,36 @@ python -m venv .venv
 
 通用命令为 `python -m mail_gpt run --once` / `python -m mail_gpt run`。
 
-2026-09-06 已在本机启动一个隐藏的后台进程，默认每 30 秒轮询。不要再同时启动第二个实例。进程信息保存在 `data/worker-process.json`，日志在其中指定的 `stderr` 文件；正常连接会出现 `poll_complete`。可运行 `powershell -File .\stop-bot.ps1` 停止这个后台实例。没有配置开机自启，电脑重启后需要重新运行。处理中强制停止后，未完成请求可能需要按下方恢复说明核对。
+本机已使用 Windows 任务计划程序运行隐藏的守护进程，在当前用户登录 Windows 后启动，并每 5 分钟补做一次启动检查。无需保存 Windows 登录密码，不依赖 Codex 桌面任务保持打开。守护程序与工作进程各自有单实例锁，不会因为重复触发多开机器人。电脑未登录、关机或休眠时不能运行。
+
+### 开机自启、恢复和故障提醒
+
+在本机 `.env` 设置 `NOTIFY_EMAIL` 为已允许的发件人邮箱。留空则关闭邮件提醒。安装命令会将 `CODEX_PATH` 固定为当前已验证的原生可执行文件路径，解决计划任务没有桌面 PATH 的问题。
+
+```powershell
+# 安装或更新同一个 Windows 当前用户任务，首次或迁移电脑时执行
+.\install-autostart.ps1
+# 取消暂停，并立即启动守护程序
+.\start-bot.ps1
+# 持久暂停：当前邮件处理完成后停止，后续自动触发也不会重新启动
+.\stop-bot.ps1
+# 查看守护进程、工作进程、心跳和最近通知状态
+.\run.ps1 -Command health
+# 发一封明确标注的通知通道测试邮件（遵守 5 分钟合并间隔）
+.\run.ps1 -Command notify-test
+# 卸载自启，并请求安全暂停，不删除登录状态或邮件记录
+.\install-autostart.ps1 -Remove
+```
+
+- 工作进程意外退出后，守护程序从 30 秒起退避重启，连续失败时最长等 15 分钟。守护程序本身退出时，Windows 任务失败重试和每 5 分钟补查提供下一层恢复。
+- 连续 3 轮收信/处理失败、进程意外退出、AI 失败或请求进入 `review` 时发送提醒。相同故障不反复发送，新故障在 5 分钟内合并；恢复正常后发送恢复说明。
+- 较长时间没有进度时会提醒；不强杀可能仍在投递的进程。生成、投递中断后的原请求仍按下方人工核对规则处理，不因重启而自动盲目重发。
+- 已确认 SMTP 尚未提交的通知发送失败会保留，网络恢复后重试。提交结果不确定或通知发送中崩溃会标记 `uncertain`，不会自动再发；可从 `health` 中看到。电脑完全关机、未登录、休眠或断网期间无法即时发通知。
+- 日志位于数据库对应的 `.runtime` 目录，默认 `data/conversations.runtime/worker.log` 和 `supervisor.log`，每个文件约 2 MB 轮换并保留 3 份。通知队列、暂停状态与心跳也在此处；不保存邮件正文或原始异常内容。原会话数据库和 Codex 会话位置不变。
+
+`data/autostart-task.json` 保存本机计划任务名称。跨电脑迁移或 Codex 可执行文件更新后，重新验证 CLI 兼容性并安装任务；固定版本检查依然有效。若不安装 Windows 自启，可用 `python -m mail_gpt supervise` 直接运行守护程序。
+
+2026-09-07 本机验证：任务安装为当前用户 Interactive、Limited 权限，登录触发与每 5 分钟补查均已核对，运行时限为无限且忽略重复启动。发现并修复计划任务无法继承桌面 Codex 路径的问题后，守护程序自动恢复并完成真实收信检查。故障、测试及恢复通知均已从 Gmail 已发送记录确认；实际暂停后重复触发任务没有拉起机器人，恢复启动后正常轮询。没有为测试而重启整台电脑；QQ 客户端实际入箱需以收件箱为准。
 
 从你的邮箱给专用邮箱发：
 
@@ -168,11 +197,14 @@ mail_gpt/
   storage.py   SQLite、会话别名、收发状态、实例锁
   status.py    只读核对邮箱与数据库，识别尚未登记的来信
   service.py   串联流程，不依赖具体邮件服务
+  supervisor.py    独立守护、重启退避、状态检查
+  runtime.py       心跳、持久暂停、通知测试命令
+  notifications.py 合并提醒、恢复通知、断网待发送队列
 tests/         离线单元及 subprocess 集成测试
 data/          运行数据，忽略于 Git
 ```
 
-没有加入尚未验证的 Docker 部署、OAuth、附件阅读或自动开机启动。这些可以在真实 Gmail 与 Codex 联调稳定后补充。
+没有加入尚未验证的 Docker 部署、OAuth 或附件阅读。Windows 登录后自启与故障提醒已实现。
 
 ## 测试与本次验证
 
@@ -182,7 +214,7 @@ python -m unittest discover -v
 & "$env:USERPROFILE\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" -m unittest discover -v
 ```
 
-47 项离线测试使用临时数据库、模拟 IMAP/SMTP、模拟 CLI，以及独立 Python 子进程 fixture。覆盖 thread/session 持久化、RFC 引用回退、NEW、去重、白名单、DMARC、防循环、引用与附件、参数及环境隔离、错误脱敏、限流、SMTP 不确定投递和崩溃恢复；另外覆盖已读 QQ 回复补处理、无空格主题、真实 IMAP capability 类型、QQ 引用标记、扫描日期持久化、旧线程别名修复及状态对账。本次新增测试验证独立新话题避开旧请求阻塞、旧话题可继续回复、重启后不重复生成、已读标记失败不阻断处理，以及扫描期间完成的请求被正确报告。离线测试不登录、不联网、不发信。
+64 项离线测试使用临时数据库、模拟 IMAP/SMTP、模拟 CLI，以及独立 Python 子进程 fixture。覆盖 thread/session 持久化、RFC 引用回退、NEW、去重、白名单、DMARC、防循环、引用与附件、参数及环境隔离、错误脱敏、限流、SMTP 不确定投递和崩溃恢复；另外覆盖已读 QQ 回复补处理、无空格主题、真实 IMAP capability 类型、QQ 引用标记、扫描日期持久化、旧线程别名修复及状态对账。新增守护测试覆盖真实子进程退出后的重启退避、单实例、持久暂停、连续失败和恢复、卡住仅提醒不强杀、通知合并、断网补发、投递不确定时不重发，以及通知不改变原邮件状态。离线测试不登录、不联网、不发信。
 
 2026-09-06 的本机验证：Python 3.12.14；Codex CLI 0.153.4；已直接读取 `exec --help`、`exec resume --help` 与 feature list。已完成官方 ChatGPT 登录；真实新会话记住随机测试词，恢复相同会话后准确回答，`smoke` 通过。CLI 当前默认选用 `gpt-6-astra`，本次首轮约 116 秒，不保证几十秒内回信。Gmail IMAP 和 SMTP 的真实 TLS 登录均通过；后台监听已连接并完成首轮读取。随后已处理实际授权来信并获得 Gmail SMTP 发送成功确认；手机端 Reply 的完整闭环尚需进一步验证。
 

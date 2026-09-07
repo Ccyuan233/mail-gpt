@@ -150,6 +150,10 @@ class MailClient(Protocol):
     def mark_seen(self, uid: str): ...
 
 
+class SMTPNotSubmitted(RuntimeError):
+    """Connection/authentication failed before any message was submitted."""
+
+
 class SMTPClient:
     def __init__(self, config):
         self.config = config
@@ -157,16 +161,25 @@ class SMTPClient:
     def send(self, recipient: str, raw: bytes):
         c = self.config
         context = ssl.create_default_context()
-        if c.smtp_security == "ssl":
-            client = smtplib.SMTP_SSL(c.smtp_host, c.smtp_port, timeout=30, context=context)
-        else:
-            client = smtplib.SMTP(c.smtp_host, c.smtp_port, timeout=30)
+        client = None
         try:
+            if c.smtp_security == "ssl":
+                client = smtplib.SMTP_SSL(c.smtp_host, c.smtp_port, timeout=30, context=context)
+            else:
+                client = smtplib.SMTP(c.smtp_host, c.smtp_port, timeout=30)
             if c.smtp_security == "starttls":
                 client.ehlo()
                 client.starttls(context=context)
                 client.ehlo()
             client.login(c.email, c.password)
+        except Exception as exc:
+            if client is not None:
+                try:
+                    client.close()
+                except OSError:
+                    pass
+            raise SMTPNotSubmitted("SMTP connection or login failed before submission") from exc
+        try:
             refused = client.sendmail(c.email, [recipient], raw)
             if refused:
                 raise RuntimeError("SMTP refused recipient")
