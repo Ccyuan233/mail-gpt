@@ -6,6 +6,7 @@ import sqlite3
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
+from .mail import command
 
 
 @contextmanager
@@ -112,9 +113,12 @@ class Store:
                                (account, message_id)).fetchone()
 
     def resolve(self, account, mail):
-        aliases = (["gmail:" + mail.gmail_thread] if mail.gmail_thread else [])
-        # RFC references also link outgoing replies; this survives Gmail subject re-grouping.
-        aliases += ["rfc:" + v for v in mail.in_reply_to + list(reversed(mail.references))]
+        if command(mail.subject) == "new":
+            # A reset must also escape a blocked/uncertain old conversation.
+            return str(uuid.uuid4())
+        # Explicit replies identify a branch more precisely than Gmail grouping.
+        aliases = ["rfc:" + v for v in mail.in_reply_to + list(reversed(mail.references))]
+        aliases += (["gmail:" + mail.gmail_thread] if mail.gmail_thread else [])
         for alias in aliases:
             row = self.db.execute("SELECT thread_key FROM thread_aliases WHERE account=? AND sender=? AND alias=?",
                                   (account, mail.sender, alias)).fetchone()
@@ -137,8 +141,15 @@ class Store:
             if mail.gmail_thread:
                 aliases.append("gmail:" + mail.gmail_thread)
             for alias in aliases:
-                self.db.execute("INSERT OR IGNORE INTO thread_aliases VALUES (?,?,?,?)",
-                                (account, mail.sender, alias, key))
+                if alias.startswith("gmail:") and command(mail.subject) == "new":
+                    # References to old replies keep their original sessions. Replies
+                    # without references use the newest explicit reset in this group.
+                    self.db.execute("INSERT INTO thread_aliases VALUES (?,?,?,?) "
+                                    "ON CONFLICT(account,sender,alias) DO UPDATE SET thread_key=excluded.thread_key",
+                                    (account, mail.sender, alias, key))
+                else:
+                    self.db.execute("INSERT OR IGNORE INTO thread_aliases VALUES (?,?,?,?)",
+                                    (account, mail.sender, alias, key))
         return self.message(account, mail.message_id), True
 
     def conversation(self, key):

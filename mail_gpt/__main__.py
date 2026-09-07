@@ -90,7 +90,12 @@ def main():
                                 checked += 1
                                 state = service.process(mail)
                                 if state in {"sent", "already-sent", "skipped"}:
-                                    mailbox.mark_seen(mail.uid)
+                                    try:
+                                        mailbox.mark_seen(mail.uid)
+                                    except Exception as exc:
+                                        # All candidates are already fetched. A cosmetic
+                                        # flag failure must not starve later requests.
+                                        logging.warning("mark_seen_failed category=%s", type(exc).__name__)
                                 if state == "sent":
                                     sent += 1
                         logging.info("poll_complete checked=%s sent=%s", checked, sent)
