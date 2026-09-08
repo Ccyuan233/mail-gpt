@@ -2,7 +2,7 @@
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 import sqlite3
-from .mail import IMAPClient, command
+from .mail import IMAPClient, request_mode
 from .security import rejection
 
 
@@ -40,7 +40,7 @@ def inspect_status(config, mailbox_factory=IMAPClient):
     for mail in candidates:
         if mail.sender not in config.allowed:
             continue
-        reason = rejection(mail, config) or (None if command(mail.subject) else "subject")
+        reason = rejection(mail, config) or (None if request_mode(mail, config) else "subject")
         row = records.get(mail.message_id)
         state = row["state"] if row else ("filtered" if reason else "pending-not-recorded")
         received.append({"message_id": mail.message_id, "subject": mail.subject,

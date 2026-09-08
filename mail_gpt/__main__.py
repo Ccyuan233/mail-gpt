@@ -9,7 +9,7 @@ import sys
 import time
 from .config import Config
 from .codex import CodexRunner, BackendError
-from .mail import IMAPClient, SMTPClient, command
+from .mail import IMAPClient, SMTPClient, request_mode
 from .security import rejection
 from .service import Service
 from .storage import Store, instance_lock
@@ -111,7 +111,7 @@ def main():
                         sent = 0
                         with IMAPClient(config, since=scan_start) as mailbox:
                             candidates = list(mailbox.candidates())
-                            db.backfill_gmail_aliases(config.email, [m for m in candidates if not rejection(m, config) and command(m.subject)])
+                            db.backfill_gmail_aliases(config.email, [m for m in candidates if not rejection(m, config) and request_mode(m, config)])
                             for mail in candidates:
                                 if is_paused(config):
                                     break

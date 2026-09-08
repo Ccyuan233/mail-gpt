@@ -11,6 +11,7 @@ import re
 import smtplib
 import ssl
 from typing import Protocol
+from .runtime import read_json
 
 ID = re.compile(r"<[^<>\s]+@[^<>\s]+>")
 
@@ -26,6 +27,30 @@ def base_subject(subject):
 def command(subject):
     match = re.match(r"^\[GPT(?::(NEW))?\]", base_subject(subject), re.I)
     return ("new" if match.group(1) else "chat") if match else None
+
+
+def notice_recipients(config, data):
+    """Read durable outgoing IDs, including notices from the pre-routing version."""
+    recipients = dict(data.get("reply_recipients", {}))
+    if config.notify_email:
+        for event in data.get("events", []):
+            if event.get("state") in {"sent", "uncertain"}:
+                mid = event.get("reply_id", f"<mail-gpt-notice.{event['id']}@{config.email.split('@')[1]}>")
+                recipients.setdefault(mid, event.get("recipient", config.notify_email))
+    return recipients
+
+
+def request_mode(mail, config):
+    mode = command(mail.subject)
+    if mode:
+        return mode
+    if base_subject(mail.subject) != "邮件机器人运行提醒":
+        return None
+    data = read_json(config.runtime / "notifications.json")
+    recipients = notice_recipients(config, data)
+    if any(recipients.get(mid) == mail.sender for mid in mail.in_reply_to + mail.references):
+        return "chat"
+    return None
 
 
 class HTMLText(HTMLParser):
@@ -132,6 +157,8 @@ def make_reply(mail: Incoming, sender: str, body: str, reply_id: str):
     subject = base_subject(mail.subject)
     # NEW is a one-shot instruction; subsequent Reply subjects return to normal chat.
     subject = re.sub(r"^\[GPT:NEW\]", "[GPT]", subject, flags=re.I)
+    if not command(subject):
+        subject = "[GPT] " + subject
     msg["Subject"] = "Re: " + subject[:800]
     msg["Message-ID"] = reply_id
     msg["In-Reply-To"] = mail.message_id
@@ -219,7 +246,16 @@ class IMAPClient:
         since = date.fromisoformat(self.since)
         month = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")[since.month - 1]
         # Seen is a UI flag, never an acknowledgement that the bot handled a message.
-        query = f'SINCE {since.day:02d}-{month}-{since.year} SUBJECT "[GPT"'
+        # Scan the allowlist across subjects. Routing decides what to answer, while
+        # status can now expose legitimate mail excluded by subject rules.
+        senders = sorted(self.config.allowed)
+        if not senders:
+            return
+        terms = ['FROM "' + v.replace('\\', '\\\\').replace('"', '\\"') + '"' for v in senders]
+        sender_query = terms[-1]
+        for term in reversed(terms[:-1]):
+            sender_query = "OR " + term + " " + sender_query
+        query = f'SINCE {since.day:02d}-{month}-{since.year} ({sender_query})'
         uids = self._ok(client.uid("search", None, query))[0].split()
         for uid in sorted(uids, key=int):
             meta = self._ok(client.uid("fetch", uid, "(RFC822.SIZE)"))

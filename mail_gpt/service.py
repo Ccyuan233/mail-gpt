@@ -2,7 +2,7 @@ import json
 import logging
 import time
 import uuid
-from .mail import command, make_reply
+from .mail import request_mode, make_reply
 from .security import rejection
 from .runtime import is_paused
 
@@ -42,7 +42,7 @@ class Service:
     def process(self, mail):
         start = time.monotonic()
         c, db = self.config, self.store
-        mode = command(mail.subject)
+        mode = request_mode(mail, c)
         if rejection(mail, c) or not mode:
             return "ignored"
         row = db.message(c.email, mail.message_id)

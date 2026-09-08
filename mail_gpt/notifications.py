@@ -6,7 +6,7 @@ from email.utils import formatdate
 import logging
 import time
 import uuid
-from .mail import SMTPNotSubmitted
+from .mail import SMTPNotSubmitted, notice_recipients
 from .runtime import read_json, write_json
 
 log = logging.getLogger("mail_gpt")
@@ -21,6 +21,7 @@ class Notifications:
         for event in self.data["events"]:
             if event["state"] == "sending":
                 event["state"] = "uncertain"
+        self.data["reply_recipients"] = notice_recipients(config, self.data)
         self.save()
 
     def save(self):
@@ -71,13 +72,16 @@ class Notifications:
         for event in pending:
             when = datetime.fromtimestamp(event["created_at"], timezone.utc).astimezone().isoformat(timespec="seconds")
             body.append(when + "\n" + event["text"])
-            event.update(state="sending", last_attempt=now)
+            event.update(state="sending", last_attempt=now, reply_id=str(msg["Message-ID"]), recipient=c.notify_email)
+        self.data["reply_recipients"][str(msg["Message-ID"])] = c.notify_email
         self.data["next_attempt"] = now + 300
         self.save()
-        msg.set_content("\n\n".join(body) + "\n\n电脑完全关机或断网时无法发出提醒；确认尚未提交的通知会保留到网络恢复后发送。")
+        msg.set_content("\n\n".join(body) + "\n\n可以直接回复本通知提问；新建提问邮件请在主题开头写 [GPT]。"
+                        "\n电脑完全关机或断网时无法发出提醒；确认尚未提交的通知会保留到网络恢复后发送。")
         try:
             self.smtp.send(c.notify_email, msg.as_bytes())
         except SMTPNotSubmitted:
+            self.data["reply_recipients"].pop(str(msg["Message-ID"]), None)
             for event in pending:
                 event["state"] = "pending"
             log.warning("notification_connection_failed will_retry=true")
