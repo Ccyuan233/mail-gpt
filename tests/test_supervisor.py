@@ -183,10 +183,14 @@ class SupervisorTests(unittest.TestCase):
         self.assertNotIn("mailbox", n.data["active"])
 
     def test_stalled_worker_alert_does_not_kill_or_duplicate(self):
+        self.config = replace(self.config, codex_timeout=480)
         n = self.notices()
         s = self.supervisor(n)
         s.tick()
         self.now += 601
+        s.tick()
+        self.assertNotIn("stalled", n.data["active"])
+        self.now += 120
         s.tick()
         self.assertIn("stalled", n.data["active"])
         self.process.kill.assert_not_called()

@@ -142,12 +142,24 @@ Subject: [GPT] A-Level Physics
 
 状态命令不发信、不修改已读状态、不恢复或修改工作中的请求。扫描范围包括允许发件人在所配置文件夹和日期范围内、大小与 MIME 格式可解析的所有主题来信；不符合主题规则的普通来信也会显示为 `filtered`，附带过滤原因。读取邮箱后会再取一次数据库快照，减少扫描期间已处理邮件被误报为待处理的情况；它仍是查询时的快照，新邮件可能在查询后到达。不要仅凭数据库中没有 `pending` 或仅检查 `[GPT]` 主题就判断不存在漏信。
 
+## 联网搜索
+
+默认启用 Codex 内置实时搜索，沿用独立的 ChatGPT 登录，不需要另外配置搜索 API key。直接在普通 `[GPT]` 邮件中写“搜索中科达信公司”“查今天的新闻”或给出公开网页链接即可；已有邮件会话也可继续提问。模型按问题需要检索，普通聊天不强制搜索。无需使用 `[GPT:SEARCH]` 主题。
+
+回答要求附实际查阅来源的完整网址，区分同名公司、资料事实与推断；无法查证时说明限制。搜索和网页内容只作为资料，不能授权机器人执行网页中的指令。搜索不会登录网站，不能保证取得付费内容或所有网页。查询可能发送给搜索服务，提示要求只使用完成查询必需的信息。
+
+`.env` 的 `CODEX_WEB_SEARCH=live` 启用搜索，设为 `disabled` 可关闭，修改后安全暂停并重新启动生效。适配器同时调整工具开关、指令与事件检查；关闭时出现搜索事件仍会报错。日志中的 `codex_turn_complete web_search_calls=N` 记录本轮完成的搜索工具调用数量（包含网页读取），不记录查询和正文。
+
+CLI 0.153.4 的搜索调用经过 `codex-code-mode-host`，因此实时模式只额外开启 `features.code_mode_host`，仍关闭 `code_mode`、shell、执行器、浏览器、插件等功能。仅改 `web_search` 而继续关闭宿主，会产生 `code-mode host is disabled`，模型无法实际检索。`health` 中的工作进程状态显示启动时加载的 `web_search` 和 `codex_timeout`；检索成功与否还需看实际工具调用及来源。
+
+默认 `CODEX_TIMEOUT=480` 秒，为多步检索留出时间；已有 `.env` 的显式值优先。它是每轮最长生成时间，不是预期回信耗时。复杂搜索会增加等待和 Codex 额度使用；超时仍按原有错误及人工核对规则处理，不自动重跑。
+
 ## 默认安全策略及边界
 
 - 严格匹配发件人地址和收件人；不向来信的 `Reply-To`、Cc 或其他地址发送。多发件人/缺少 Message-ID 的来信拒绝。Gmail 的 `+tag`、点号别名不会自动合并，需明确加入白名单。
 - 默认要求收件服务写入的**最上方** `Authentication-Results`：认证服务器 `mx.google.com`、DMARC pass，且 `header.from` 与发件域名一致。不会扫描后续可伪造的同名头。迁移服务前需验证该服务会覆盖/正确排序认证头；不能把 From 白名单当作身份认证。邮件转发或组织邮件策略可能使认证失败而被忽略。
 - 检查自己发送的邮件、Auto-Submitted、Precedence、X-Auto-Response-Suppress、List-Id、空 Return-Path 等，输出邮件带 `auto-replied` 标记。
-- 默认 `read-only`、不允许申请提权、禁用 shell/执行器/浏览器/插件/Apps/MCP 插件发现/子代理/记忆/图像工具，禁用搜索，忽略用户配置与规则，不加载项目指令。使用独立 Codex home 和空工作目录。子进程环境不包含邮箱密码、API key 或父任务连接信息。
+- 默认 `read-only`、不允许申请提权、禁用 shell/执行器/浏览器/插件/Apps/MCP 插件发现/子代理/记忆/图像工具，仅开放内置公共网页搜索与读取；忽略用户配置与规则，不加载项目指令。使用独立 Codex home 和空工作目录。子进程环境不包含邮箱密码、API key 或父任务连接信息。
 - `read-only` 本身不是“不能读本机文件”的保证，因此还关闭上述工具能力；固定提示只是补充。CLI 固定在已核实的 0.153.4，升级必须重新审查能力和测试，不要仅修改版本号绕过检查。此处是 CLI 功能与沙箱策略，不是独立虚拟机；强隔离部署应使用单独 OS 用户/容器，仅挂载机器人必需目录。真实登录后的攻击性输入验证尚未完成。
 - 附件仅列出文件名和 MIME 类型，忽略内容，不保存、执行或送给模型。单封邮件默认上限 1 MiB，正文上限 24,000 字符，回答上限 512,000 字节。
 - 中文/英文引用清理是启发式规则，不保证所有客户端格式及行内回复都无损。被删除的引用有时可能是问题的一部分；复杂问题建议独立写在引用上方。
@@ -216,8 +228,10 @@ python -m unittest discover -v
 & "$env:USERPROFILE\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe" -m unittest discover -v
 ```
 
-72 项离线测试使用临时数据库、模拟 IMAP/SMTP、模拟 CLI，以及独立 Python 子进程 fixture。覆盖 thread/session 持久化、RFC 引用回退、NEW、去重、白名单、DMARC、防循环、引用与附件、参数及环境隔离、错误脱敏、限流、SMTP 不确定投递和崩溃恢复；另外覆盖已读 QQ 回复补处理、无空格主题、真实 IMAP capability 类型、QQ 引用标记、扫描日期持久化、旧线程别名修复及状态对账。新增守护测试覆盖真实子进程退出后的重启退避、单实例、持久暂停、连续失败和恢复、卡住仅提醒不强杀、通知合并、断网补发、投递不确定时不重发，以及通知不改变原邮件状态。离线测试不登录、不联网、不发信。
+77 项离线测试使用临时数据库、模拟 IMAP/SMTP、模拟 CLI，以及独立 Python 子进程 fixture。覆盖 thread/session 持久化、RFC 引用回退、NEW、去重、白名单、DMARC、防循环、引用与附件、参数及环境隔离、错误脱敏、限流、SMTP 不确定投递和崩溃恢复；另外覆盖已读 QQ 回复补处理、无空格主题、真实 IMAP capability 类型、QQ 引用标记、扫描日期持久化、旧线程别名修复及状态对账。新增守护测试覆盖真实子进程退出后的重启退避、单实例、持久暂停、连续失败和恢复、卡住仅提醒不强杀、通知合并、断网补发、投递不确定时不重发，以及通知不改变原邮件状态。离线测试不登录、不联网、不发信。
 
 2026-09-06 的本机验证：Python 3.12.14；Codex CLI 0.153.4；已直接读取 `exec --help`、`exec resume --help` 与 feature list。已完成官方 ChatGPT 登录；真实新会话记住随机测试词，恢复相同会话后准确回答，`smoke` 通过。CLI 当前默认选用 `gpt-6-astra`，本次首轮约 116 秒，不保证几十秒内回信。Gmail IMAP 和 SMTP 的真实 TLS 登录均通过；后台监听已连接并完成首轮读取。随后已处理实际授权来信并获得 Gmail SMTP 发送成功确认；手机端 Reply 的完整闭环尚需进一步验证。
+
+2026-09-08 联网验证：真实查询“中科达信公司”完成 5 次搜索/网页读取工具调用，结果区分不同公司，并提供公开报告及政府名单来源的完整网址。未能读取的官网和 PDF 已在答案中说明。新增离线用例覆盖搜索开关、新建与续接的能力限制、禁止其他工具、来源网址经过 MIME 回信后的保留与去重；守护测试验证较长搜索时限不会提前触发卡住提醒。
 
 参考代码已通过 GitHub 连接器读取：[getThreadId.js](https://github.com/tgeant/gmail-chatgpt-assistant/blob/main/emailProcessingUtils/getThreadId.js)、[index.js](https://github.com/tgeant/gmail-chatgpt-assistant/blob/main/index.js)。只借鉴 Gmail thread 思路，本项目为独立实现，没有照搬其旧 OpenAI API 调用或代码。当前官方公开配置 schema 也已读取用于检查配置字段；实际命令以本机版本为准。官方 [Codex 非交互文档](https://developers.openai.com/codex/noninteractive) 此次访问返回 Forbidden，未把页面内容视为已经核验。

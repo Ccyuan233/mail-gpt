@@ -51,11 +51,12 @@ class Config:
     require_dmarc: bool = True
     auth_serv_id: str = "mx.google.com"
     codex_path: str = "codex"
-    codex_timeout: int = 240
+    codex_timeout: int = 480
     model: str = ""
     expected_version: str = "0.153.4"
     imap_start_date: str = ""
     notify_email: str = ""
+    web_search: str = "live"
 
     @property
     def runtime(self):
@@ -91,6 +92,9 @@ class Config:
         if dmarc not in {"true", "false"}:
             raise ValueError("REQUIRE_DMARC must be true or false")
         start_date = get("IMAP_START_DATE")
+        web_search = get("CODEX_WEB_SEARCH", "live").lower()
+        if web_search not in {"disabled", "live"}:
+            raise ValueError("CODEX_WEB_SEARCH must be disabled or live")
         if start_date:
             date.fromisoformat(start_date)
         notify = get("NOTIFY_EMAIL")
@@ -109,6 +113,6 @@ class Config:
                    max_prompt_chars=num("MAX_PROMPT_CHARS", 24000),
                    max_requests_per_hour=num("MAX_REQUESTS_PER_HOUR", 30),
                    require_dmarc=dmarc == "true", auth_serv_id=get("AUTH_SERV_ID", "mx.google.com"),
-                   codex_path=get("CODEX_PATH", "codex"), codex_timeout=num("CODEX_TIMEOUT", 240),
+                   codex_path=get("CODEX_PATH", "codex"), codex_timeout=num("CODEX_TIMEOUT", 480),
                    model=get("CODEX_MODEL"), expected_version=get("CODEX_EXPECTED_VERSION", "0.153.4"),
-                   imap_start_date=start_date, notify_email=notify)
+                   imap_start_date=start_date, notify_email=notify, web_search=web_search)

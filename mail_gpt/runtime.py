@@ -31,7 +31,8 @@ class Health:
     def __init__(self, config):
         self.path = config.runtime / "worker.json"
         self.data = {"pid": os.getpid(), "run_id": os.environ.get("MAIL_GPT_RUN_ID", uuid.uuid4().hex),
-                     "started_at": time.time(), "last_success": None, "consecutive_failures": 0}
+                     "started_at": time.time(), "last_success": None, "consecutive_failures": 0,
+                     "web_search": config.web_search, "codex_timeout": config.codex_timeout}
 
     def beat(self, phase):
         self.data.update(phase=phase, updated_at=time.time())
